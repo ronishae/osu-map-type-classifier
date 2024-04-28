@@ -1,0 +1,1 @@
+# osu-map-type-classifier
