@@ -1,5 +1,6 @@
 import csv
 import logging
+import numpy as np
 import math
 from dataclasses import dataclass
 OUTPUT_FILE_HEADER = "HPDrainRate,CircleSize,OverallDifficulty,ApproachRate,SliderMultiplier,SliderTickRate\n"
@@ -11,6 +12,9 @@ class MapInfo():
     y_diffs: a list of differences in y between consecutive objects in the map.
     dists: a list of distances between consecutive objects in the map.
     time_diffs: a list of differences in time (milliseconds) between consecutive objects in the map.
+    num_circles: the number of hit circle objects in the map.
+    num_sliders: the number of slider objects in the map.
+    num_spinners: the number of spinner objects in the map.
     object_types: a list of the object types (circle, slider, or spinner).
     slider_counts: a dictionary holding the amount of occurrences of each slider type
     B (Bezier) type sliders
@@ -22,6 +26,9 @@ class MapInfo():
     y_diffs: list[float]
     dists: list[float]
     time_diffs: list[int]
+    num_circles: int
+    num_sliders: int
+    num_spinners: int
     object_types: list[str]
     slider_counts: dict[str:int]
 
@@ -130,53 +137,57 @@ def _get_object_type(num) -> str:
     else:
         return "spinner"
 
-def _calculate_distance(x1, y1, x2, y2) -> float:
-    """Calculates centre to centre distance between circles"""
-    # TODO: need to figure out circle size and pixel values
-    return 0
-
-def _get_info(in_file, beat_lengths) -> MapInfo:
+def _get_info(in_file) -> MapInfo:
     """Returns a list information on the hit objects in the map.
 
     Differences are calculated from the later object to the earlier object.
     """
-    # TODO: use numpy for math analysis!
-    # TODO: currently does not parse first object for adding to slider type
-    # TODO: might want to do something with the slider points (maybe 
+    # TODO: might want to do something with the slider points (eg 
     # calculate distance using the last slider point)
-    x_diff = []
-    y_diff = []
-    distance = []
-    time_diff = []
     types = []
+    num_sliders = 0
+    num_circles = 0
+    num_spinners = 0
     slider_counts = {'B': 0, 'C': 0, 'L': 0, 'P': 0}
 
     _seek_to_section(in_file, "HitObjects")
-    prev = in_file.readline()
+
+    # read from file into memory
+    x_list = []
+    y_list = []
+    time_list = []
     cur = in_file.readline()
     while cur != '':
-        parsed_prev = prev.split(',')
         parsed_cur = cur.split(',')
+
+        # update object counts
         obj_type = int(parsed_cur[3])
         if _is_slider(obj_type):
+            num_sliders += 1
             params = parsed_cur[5].split('|')
             slider_type = params[0]
             slider_counts[slider_type] += 1
+        elif _is_circle(obj_type): 
+            num_circles += 1
+        else:
+            num_spinners += 1
 
-        x1 = float(parsed_prev[0])
-        y1 = float(parsed_prev[1])
-        x2 = float(parsed_cur[0])
-        y2 = float(parsed_cur[1])
-        x_diff.append(x2 - x1)
-        y_diff.append(y2 - y1)
-        distance.append(math.dist([x1, y1], [x2, y2]))
-        time_diff.append(int(parsed_cur[2]) - int(parsed_prev[2]))
+        # read hit object information
+        x_list.append(float(parsed_cur[0]))
+        y_list.append(float(parsed_cur[1]))
+        time_list.append(float(parsed_cur[2]))
         types.append(_get_object_type(obj_type))
         
-        prev = cur
         cur = in_file.readline()
 
-    return MapInfo(x_diff, y_diff, distance, time_diff, types, slider_counts)
+    # short computations
+    objects = np.array([x_list, y_list, time_list])
+    x_diff, y_diff, time_diff = np.diff(objects, axis=1)
+    distances = np.sqrt(x_diff**2 + y_diff**2)
+
+    # TODO: may want to return the list of the objects as well
+    return MapInfo(x_diff, y_diff, distances, time_diff, num_circles, 
+                   num_sliders, num_spinners, types, slider_counts)
 
 def parse_osu(input_file_name):
     # TODO apparently using with is better so change it
@@ -195,7 +206,8 @@ def parse_osu(input_file_name):
     # get list of beat lengths
     beat_lengths = _get_beat_lengths(in_file)
 
-    info = _get_info(in_file, beat_lengths)
+    info = _get_info(in_file)
+    # line += str(info)
     line += '\n'
     out.write(line)
 
@@ -206,7 +218,7 @@ def parse_osu(input_file_name):
 if __name__ == "__main__":
     input_file = "quaver.osu" 
     # note for later: want to use enumerate and zip more often where applicable
-    level = logging.DEBUG # TODO: look more into logging module
-    logging.basicConfig(level=level)
+    
+    logging.basicConfig(filename='parser.log',filemode='w', level=logging.DEBUG)
     parse_osu(input_file)
 
