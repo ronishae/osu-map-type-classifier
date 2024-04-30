@@ -1,5 +1,30 @@
 import csv
+import logging
+import math
+from dataclasses import dataclass
 OUTPUT_FILE_HEADER = "HPDrainRate,CircleSize,OverallDifficulty,ApproachRate,SliderMultiplier,SliderTickRate\n"
+
+@dataclass
+class MapInfo():
+    """
+    x_diffs: a list of differences in x between consecutive objects in the map.
+    y_diffs: a list of differences in y between consecutive objects in the map.
+    dists: a list of distances between consecutive objects in the map.
+    time_diffs: a list of differences in time (milliseconds) between consecutive objects in the map.
+    object_types: a list of the object types (circle, slider, or spinner).
+    slider_counts: a dictionary holding the amount of occurrences of each slider type
+    B (Bezier) type sliders
+    C (Centripetal catmull-rom) type sliders
+    L (Linear) type sliders
+    P (Perfect Circle) type sliders
+    """
+    x_diffs: list[float]
+    y_diffs: list[float]
+    dists: list[float]
+    time_diffs: list[int]
+    object_types: list[str]
+    slider_counts: dict[str:int]
+
 
 def compute_diffs(input_file: str):
     differences = []
@@ -89,39 +114,33 @@ def _get_beat_lengths(in_file) -> list[tuple[int, float]]:
     return beat_lengths
 
 def _is_circle(num) -> bool:
+    """The type is a circle if and only if the first bit is set."""
     return num & 1
 
 def _is_slider(num) -> bool:
+    """The type is a slider if and only if the second bit is set."""
     return num & 1 << 1
 
-def _get_object_type(num) -> int:
+def _get_object_type(num) -> str:
+    """Outputs the name of the object type"""
     if _is_circle(num):
-        return 0
+        return "circle"
     elif _is_slider(num):
-        return 1
+        return "slider"
     else:
-        return 2
+        return "spinner"
 
-def _calculate_distance(x1, y1, x2, y2, size) -> float:
-    """Calculates edge to edge distance between circles"""
+def _calculate_distance(x1, y1, x2, y2) -> float:
+    """Calculates centre to centre distance between circles"""
     # TODO: need to figure out circle size and pixel values
     return 0
 
-def _get_info(in_file, beat_lengths):
+def _get_info(in_file, beat_lengths) -> MapInfo:
     """Returns a list information on the hit objects in the map.
 
     Differences are calculated from the later object to the earlier object.
-
-    The first element is a list of the x_difference.
-    The second is a list of the y_difference.
-    The third is a list of the distance between objects.
-    The fourth is a list of the time difference.
-    The fifth is a list of the object type (circle, slider, or spinner)
-    The sixth is the number of B (Bezier) type sliders
-    The seventh is the number of C (Centripetal catmull-rom) type sliders
-    The eigth is the number of L (Linear) type sliders
-    The ninth is the number of P (Perfect Circle) type sliders
     """
+    # TODO: use numpy for math analysis!
     # TODO: currently does not parse first object for adding to slider type
     # TODO: might want to do something with the slider points (maybe 
     # calculate distance using the last slider point)
@@ -130,10 +149,7 @@ def _get_info(in_file, beat_lengths):
     distance = []
     time_diff = []
     types = []
-    B = 0
-    C = 0
-    L = 0
-    P = 0
+    slider_counts = {'B': 0, 'C': 0, 'L': 0, 'P': 0}
 
     _seek_to_section(in_file, "HitObjects")
     prev = in_file.readline()
@@ -143,15 +159,9 @@ def _get_info(in_file, beat_lengths):
         parsed_cur = cur.split(',')
         obj_type = int(parsed_cur[3])
         if _is_slider(obj_type):
-            params = parsed_prev[5].split('|')
-            if params[0] == 'B':
-                B += 1
-            elif params[0] == 'C':
-                C += 1
-            elif params[0] == 'L':
-                L += 1
-            else:
-                P += 1
+            params = parsed_cur[5].split('|')
+            slider_type = params[0]
+            slider_counts[slider_type] += 1
 
         x1 = float(parsed_prev[0])
         y1 = float(parsed_prev[1])
@@ -159,16 +169,17 @@ def _get_info(in_file, beat_lengths):
         y2 = float(parsed_cur[1])
         x_diff.append(x2 - x1)
         y_diff.append(y2 - y1)
-        distance.append(_calculate_distance(x1, y1, x2, y2, 0)) #todo add circle size
-        time_diff.append(parsed_cur[2] - parsed_prev[2])
+        distance.append(math.dist([x1, y1], [x2, y2]))
+        time_diff.append(int(parsed_cur[2]) - int(parsed_prev[2]))
         types.append(_get_object_type(obj_type))
         
         prev = cur
         cur = in_file.readline()
 
-    return (x_diff, y_diff, distance, time_diff, types, B, C, L, P)
+    return MapInfo(x_diff, y_diff, distance, time_diff, types, slider_counts)
 
 def parse_osu(input_file_name):
+    # TODO apparently using with is better so change it
     in_file = open(input_file_name, encoding="utf8", mode='r')
     out = open("output.csv", 'w')
 
@@ -183,9 +194,8 @@ def parse_osu(input_file_name):
     
     # get list of beat lengths
     beat_lengths = _get_beat_lengths(in_file)
-    print(beat_lengths)
 
-
+    info = _get_info(in_file, beat_lengths)
     line += '\n'
     out.write(line)
 
@@ -195,5 +205,8 @@ def parse_osu(input_file_name):
 
 if __name__ == "__main__":
     input_file = "quaver.osu" 
+    # note for later: want to use enumerate and zip more often where applicable
+    level = logging.DEBUG # TODO: look more into logging module
+    logging.basicConfig(level=level)
     parse_osu(input_file)
 
