@@ -8,6 +8,9 @@ OUTPUT_FILE_HEADER = "HPDrainRate,CircleSize,OverallDifficulty,ApproachRate,Slid
 @dataclass
 class MapInfo():
     """
+    xs: a list of x positions of the hit objects.
+    ys: a list of y positions of the hit objects.
+    times: a list of times hit objects appear.
     x_diffs: a list of differences in x between consecutive objects in the map.
     y_diffs: a list of differences in y between consecutive objects in the map.
     dists: a list of distances between consecutive objects in the map.
@@ -22,6 +25,9 @@ class MapInfo():
     L (Linear) type sliders
     P (Perfect Circle) type sliders
     """
+    xs: list[float]
+    ys: list[float]
+    times: list[int]
     x_diffs: list[float]
     y_diffs: list[float]
     dists: list[float]
@@ -31,31 +37,6 @@ class MapInfo():
     num_spinners: int
     object_types: list[str]
     slider_counts: dict[str:int]
-
-
-def compute_diffs(input_file: str):
-    differences = []
-    previous_value = None
-
-    with open(input_file, 'r') as file:
-        reader = csv.reader(file)
-        header = next(reader)  # Skip the header
-
-        # Skip the first data point
-        first_row = next(reader)
-        previous_value = int(first_row[2])
-
-        for row in reader:
-            current_value = int(row[2])
-            if previous_value is not None:
-                difference = current_value - previous_value
-                differences.append(difference)
-            previous_value = current_value
-
-    # Output the differences
-    print("Differences between consecutive third column values:")
-    for diff in differences:
-        print(diff)
 
 def _seek_to_section(in_file, section) -> None:
     """Jumps to the given section in the file (case sensitive).
@@ -67,7 +48,7 @@ def _seek_to_section(in_file, section) -> None:
     section -- the name of the section
     """
     row = in_file.readline()
-    while ("[" + section + "]") not in row:
+    while (f"[{section}]") not in row:
         row = in_file.readline()
 
     return
@@ -80,6 +61,7 @@ def _read_difficulty(in_file) -> str:
     
     in_file -- the opened file to read
     """
+    logging.debug("Reading difficulty information.")
     _seek_to_section(in_file, "Difficulty")
 
     line = ""
@@ -104,6 +86,7 @@ def _get_beat_lengths(in_file) -> list[tuple[int, float]]:
 
     in_file -- the file to read
     """
+    logging.debug("Reading beat length information.")
     _seek_to_section(in_file, "TimingPoints")
     beat_lengths = []
 
@@ -142,12 +125,11 @@ def _get_info(in_file) -> MapInfo:
 
     Differences are calculated from the later object to the earlier object.
     """
+    logging.info("Started reading hit object information.")
     # TODO: might want to do something with the slider points (eg 
     # calculate distance using the last slider point)
     types = []
-    num_sliders = 0
-    num_circles = 0
-    num_spinners = 0
+    num_sliders, num_circles, num_spinners = 0, 0, 0
     slider_counts = {'B': 0, 'C': 0, 'L': 0, 'P': 0}
 
     _seek_to_section(in_file, "HitObjects")
@@ -175,7 +157,7 @@ def _get_info(in_file) -> MapInfo:
         # read hit object information
         x_list.append(float(parsed_cur[0]))
         y_list.append(float(parsed_cur[1]))
-        time_list.append(float(parsed_cur[2]))
+        time_list.append(int(parsed_cur[2]))
         types.append(_get_object_type(obj_type))
         
         cur = in_file.readline()
@@ -185,11 +167,23 @@ def _get_info(in_file) -> MapInfo:
     x_diff, y_diff, time_diff = np.diff(objects, axis=1)
     distances = np.sqrt(x_diff**2 + y_diff**2)
 
-    # TODO: may want to return the list of the objects as well
-    return MapInfo(x_diff, y_diff, distances, time_diff, num_circles, 
-                   num_sliders, num_spinners, types, slider_counts)
+    outInfo = MapInfo(x_list, y_list, time_list, x_diff, y_diff, distances, 
+                      time_diff, num_circles, num_sliders, num_spinners,
+                      types, slider_counts)
+    logging.info("Finished reading hit object information.")
+    return outInfo
+
+def _compute_attributes(info: MapInfo, beat_lengths: list[float]) -> str:
+    logging.info("Started computing attributes.")
+    formatted_output = ''
+
+    logging.info("Finished computing attributes.")
+    return formatted_output
+    
 
 def parse_osu(input_file_name):
+    """Parses the osu formatted file and outputs it as a csv file."""
+    logging.info(f"Started parsing file {input_file_name}.")
     # TODO apparently using with is better so change it
     in_file = open(input_file_name, encoding="utf8", mode='r')
     out = open("output.csv", 'w')
@@ -207,18 +201,20 @@ def parse_osu(input_file_name):
     beat_lengths = _get_beat_lengths(in_file)
 
     info = _get_info(in_file)
-    # line += str(info)
+    line += _compute_attributes(info, beat_lengths)
+
     line += '\n'
     out.write(line)
 
     out.close()
     in_file.close()
+    logging.info(f"Finished parsing file {input_file_name}.")
     return
 
 if __name__ == "__main__":
+    logging.basicConfig(filename='parser.log',filemode='w', level=logging.INFO, 
+                        format='%(asctime)s - %(message)s', datefmt='%d-%b-%y %H:%M:%S')
+
     input_file = "quaver.osu" 
-    # note for later: want to use enumerate and zip more often where applicable
-    
-    logging.basicConfig(filename='parser.log',filemode='w', level=logging.DEBUG)
     parse_osu(input_file)
 
