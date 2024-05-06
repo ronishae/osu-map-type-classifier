@@ -24,6 +24,7 @@ class MapInfo():
     C (Centripetal catmull-rom) type sliders
     L (Linear) type sliders
     P (Perfect Circle) type sliders
+    length: the time between the first and last hit object
     """
     xs: list[float]
     ys: list[float]
@@ -37,6 +38,14 @@ class MapInfo():
     num_spinners: int
     object_types: list[str]
     slider_counts: dict[str:int]
+    length: int
+
+@dataclass
+class ComputedInfo():
+    """
+    
+    """
+
 
 def _seek_to_section(in_file, section) -> None:
     """Jumps to the given section in the file (case sensitive).
@@ -99,6 +108,7 @@ def _get_beat_lengths(in_file) -> list[tuple[int, float]]:
         if beat_length >= 0: # only want non-inherited beat lengths
             pair = (time, beat_length)
             beat_lengths.append(pair)
+            
         row = in_file.readline()
     
     return beat_lengths
@@ -124,6 +134,7 @@ def _get_info(in_file) -> MapInfo:
     """Returns a list information on the hit objects in the map.
 
     Differences are calculated from the later object to the earlier object.
+    Assumes non-empty hit object list.
     """
     logging.info("Started reading hit object information.")
     # TODO: might want to do something with the slider points (eg 
@@ -139,6 +150,8 @@ def _get_info(in_file) -> MapInfo:
     y_list = []
     time_list = []
     cur = in_file.readline()
+    start = int(cur.split(',')[2])
+
     while cur != '':
         parsed_cur = cur.split(',')
 
@@ -160,7 +173,10 @@ def _get_info(in_file) -> MapInfo:
         time_list.append(int(parsed_cur[2]))
         types.append(_get_object_type(obj_type))
         
+        end = int(cur.split(',')[2])
         cur = in_file.readline()
+    
+    length = end - start
 
     # short computations
     objects = np.array([x_list, y_list, time_list])
@@ -169,11 +185,14 @@ def _get_info(in_file) -> MapInfo:
 
     outInfo = MapInfo(x_list, y_list, time_list, x_diff, y_diff, distances, 
                       time_diff, num_circles, num_sliders, num_spinners,
-                      types, slider_counts)
+                      types, slider_counts, length)
     logging.info("Finished reading hit object information.")
     return outInfo
 
-def _compute_attributes(info: MapInfo, beat_lengths: list[float]) -> str:
+def _compute_attributes(info: MapInfo, beat_lengths: list[float]) -> ComputedInfo:
+    """
+    Does more "advanced" computation using the map info
+    """
     logging.info("Started computing attributes.")
     formatted_output = ''
 
@@ -201,7 +220,8 @@ def parse_osu(input_file_name):
     beat_lengths = _get_beat_lengths(in_file)
 
     info = _get_info(in_file)
-    line += _compute_attributes(info, beat_lengths)
+    line += str(list(info.dists))
+    computed = _compute_attributes(info, beat_lengths)
 
     line += '\n'
     out.write(line)
