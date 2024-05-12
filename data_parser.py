@@ -5,6 +5,29 @@ import math
 from dataclasses import dataclass
 OUTPUT_FILE_HEADER = "HPDrainRate,CircleSize,OverallDifficulty,ApproachRate,SliderMultiplier,SliderTickRate\n"
 
+@dataclass 
+class HitObject():
+    x: int = None
+    y: int = None
+    time: int = None
+
+@dataclass
+class HitCircle(HitObject):
+    pass
+
+@dataclass
+class Slider(HitObject):
+    sliderType: str = None
+    # lastTime: int
+    lastX: int = None
+    lastY: int = None
+    timeLength: float = None
+
+@dataclass
+class Spinner(HitObject):
+    endTime: float = None
+
+
 @dataclass
 class MapInfo():
     """
@@ -18,7 +41,7 @@ class MapInfo():
     num_circles: the number of hit circle objects in the map.
     num_sliders: the number of slider objects in the map.
     num_spinners: the number of spinner objects in the map.
-    object_types: a list of the object types (circle, slider, or spinner).
+    hit_objects: a list of HitCircle, Slider, and Spinner objects.
     slider_counts: a dictionary holding the amount of occurrences of each slider type
     B (Bezier) type sliders
     C (Centripetal catmull-rom) type sliders
@@ -36,15 +59,28 @@ class MapInfo():
     num_circles: int
     num_sliders: int
     num_spinners: int
-    object_types: list[str]
+    hit_objects: list[HitCircle|Slider|Spinner]
     slider_counts: dict[str:int]
     length: int
 
 @dataclass
 class ComputedInfo():
     """
-    
+    avgDist: the average distance between two objects in pixels (spinner excluded)
+    avgTime: the average % of beat length between two objects. Ignores time difference if the difference is over 800ms
+    (this number is somewhat arbtrirary, but it is to ensure breaks are ignored)
+    The rest of the attributes are the percent of hit objects (includes spinner) mapped at that time
     """
+    avgDist: float
+    avgTime: float
+    wholes: float
+    halves: float
+    thirds: float
+    fourths: float
+    sixths: float
+    eigths: float
+    twelfths: float
+    sixteenths: float
 
 
 def _seek_to_section(in_file, section) -> None:
@@ -105,9 +141,9 @@ def _get_beat_lengths(in_file) -> list[tuple[int, float]]:
         time = int(parsed[0])
         beat_length = float(parsed[1])
 
-        if beat_length >= 0: # only want non-inherited beat lengths
-            pair = (time, beat_length)
-            beat_lengths.append(pair)
+        # if beat_length >= 0: # only want non-inherited beat lengths
+        pair = (time, beat_length)
+        beat_lengths.append(pair)
             
         row = in_file.readline()
     
@@ -130,6 +166,22 @@ def _get_object_type(num) -> str:
     else:
         return "spinner"
 
+def _parse_slider(parsed_cur: list[str], slider_counts: dict[str:int]) -> Slider:
+    slider = Slider()
+
+    params = parsed_cur[5].split('|')
+    slider_type = params[0]
+    slider_counts[slider_type] += 1
+    last_point = params[-1].split(':')
+    last_x = int(last_point[0])
+    last_y = int(last_point[1])
+
+    slider.sliderType = slider_type
+    slider.lastX = last_x
+    slider.lastY = last_y
+
+    return slider
+
 def _get_info(in_file) -> MapInfo:
     """Returns a list information on the hit objects in the map.
 
@@ -139,7 +191,7 @@ def _get_info(in_file) -> MapInfo:
     logging.info("Started reading hit object information.")
     # TODO: might want to do something with the slider points (eg 
     # calculate distance using the last slider point)
-    types = []
+    hit_objects = []
     num_sliders, num_circles, num_spinners = 0, 0, 0
     slider_counts = {'B': 0, 'C': 0, 'L': 0, 'P': 0}
 
@@ -154,25 +206,38 @@ def _get_info(in_file) -> MapInfo:
 
     while cur != '':
         parsed_cur = cur.split(',')
+        new_hitObject = HitObject()
 
         # update object counts
         obj_type = int(parsed_cur[3])
         if _is_slider(obj_type):
             num_sliders += 1
-            params = parsed_cur[5].split('|')
-            slider_type = params[0]
-            slider_counts[slider_type] += 1
+            new_hitObject = _parse_slider(parsed_cur, slider_counts)
+            
         elif _is_circle(obj_type): 
             num_circles += 1
-        else:
+            new_hitObject = HitCircle()
+        else: # spinner
             num_spinners += 1
+            new_hitObject = Spinner()
+            new_hitObject.endTime = int(parsed_cur[5])
 
         # read hit object information
-        x_list.append(float(parsed_cur[0]))
-        y_list.append(float(parsed_cur[1]))
-        time_list.append(int(parsed_cur[2]))
-        types.append(_get_object_type(obj_type))
+        x = int(parsed_cur[0])
+        y = int(parsed_cur[1])
+        time = int(parsed_cur[2])
+
+        x_list.append(x)
+        new_hitObject.x = x
         
+        y_list.append(y)
+        new_hitObject.y = y
+
+        time_list.append(time)
+        new_hitObject.time = time
+
+        hit_objects.append(new_hitObject)
+
         end = int(cur.split(',')[2])
         cur = in_file.readline()
     
@@ -181,11 +246,11 @@ def _get_info(in_file) -> MapInfo:
     # short computations
     objects = np.array([x_list, y_list, time_list])
     x_diff, y_diff, time_diff = np.diff(objects, axis=1)
-    distances = np.sqrt(x_diff**2 + y_diff**2)
+    distances = np.sqrt(x_diff ** 2 + y_diff ** 2)
 
     outInfo = MapInfo(x_list, y_list, time_list, x_diff, y_diff, distances, 
                       time_diff, num_circles, num_sliders, num_spinners,
-                      types, slider_counts, length)
+                      hit_objects, slider_counts, length)
     logging.info("Finished reading hit object information.")
     return outInfo
 
@@ -220,8 +285,10 @@ def parse_osu(input_file_name):
     beat_lengths = _get_beat_lengths(in_file)
 
     info = _get_info(in_file)
-    line += str(list(info.dists))
-    computed = _compute_attributes(info, beat_lengths)
+    # _show_info_debug(info)
+
+    # line += str(list(info.dists))
+    # computed = _compute_attributes(info, beat_lengths)
 
     line += '\n'
     out.write(line)
@@ -230,6 +297,13 @@ def parse_osu(input_file_name):
     in_file.close()
     logging.info(f"Finished parsing file {input_file_name}.")
     return
+
+def _show_info_debug(info: MapInfo) -> None:
+    for obj in info.hit_objects:
+        print(obj)
+        print("\n")
+
+    print(info.slider_counts)
 
 if __name__ == "__main__":
     logging.basicConfig(filename='parser.log',filemode='w', level=logging.INFO, 
