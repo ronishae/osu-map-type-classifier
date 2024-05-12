@@ -167,6 +167,8 @@ def _get_object_type(num) -> str:
         return "spinner"
 
 def _parse_slider(parsed_cur: list[str], slider_counts: dict[str:int]) -> Slider:
+    """Returns a Slider object with initiated attributes (except for x, y, time).
+    Also updates the given dictionary's slider counts based on the slider type."""
     slider = Slider()
 
     params = parsed_cur[5].split('|')
@@ -189,8 +191,6 @@ def _get_info(in_file) -> MapInfo:
     Assumes non-empty hit object list.
     """
     logging.info("Started reading hit object information.")
-    # TODO: might want to do something with the slider points (eg 
-    # calculate distance using the last slider point)
     hit_objects = []
     num_sliders, num_circles, num_spinners = 0, 0, 0
     slider_counts = {'B': 0, 'C': 0, 'L': 0, 'P': 0}
@@ -287,8 +287,7 @@ def parse_osu(input_file_name):
     info = _get_info(in_file)
     # _show_info_debug(info)
 
-    # line += str(list(info.dists))
-    # computed = _compute_attributes(info, beat_lengths)
+    computed = _compute_attributes(info, beat_lengths)
 
     line += '\n'
     out.write(line)
