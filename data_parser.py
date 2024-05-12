@@ -21,7 +21,10 @@ class Slider(HitObject):
     # lastTime: int
     lastX: int = None
     lastY: int = None
+    numSlides: int = None
+    sliderLength: float = None
     timeLength: float = None
+    totalSliderLength: float = None
 
 @dataclass
 class Spinner(HitObject):
@@ -149,6 +152,23 @@ def _get_beat_lengths(in_file) -> list[tuple[int, float]]:
     
     return beat_lengths
 
+def _get_latest_beat_length(times: list[tuple[int, float]], time: int) -> tuple[float, float]:
+    """The second value is the beat length corresponding to the largest time in the list 
+    which is less than the given time. Assumes the times list is sorted. 
+    Assumes non-empty list. The first value is the most recent non-negative beat length before
+    the second value."""
+    pos = times[0]
+    cur = times[0]
+    for candidate in times:
+        if candidate[1] > 0:
+            pos = candidate
+
+        if candidate[0] < time:
+            cur = candidate
+
+    return (pos[1], cur[1])
+
+
 def _is_circle(num) -> bool:
     """The type is a circle if and only if the first bit is set."""
     return num & 1
@@ -166,7 +186,19 @@ def _get_object_type(num) -> str:
     else:
         return "spinner"
 
-def _parse_slider(parsed_cur: list[str], slider_counts: dict[str:int]) -> Slider:
+def _compute_slider_time_length(totalLength: float, prevBeatLength: float, 
+                                latestBeatLength: float, sliderMult: float) -> float:
+    """Calculates the length of time a slider exists for.
+    TODO: do some tests
+    """
+    if latestBeatLength >= 0:
+        beatLength = latestBeatLength
+    else:
+        beatLength = prevBeatLength * abs(latestBeatLength) / 100
+
+    return totalLength * beatLength / (sliderMult * 100)
+
+def _parse_slider(parsed_cur: list[str], slider_counts: dict[str:int], beat_lengths: list[tuple[int, float]], sliderMult: float) -> Slider:
     """Returns a Slider object with initiated attributes (except for x, y, time).
     Also updates the given dictionary's slider counts based on the slider type."""
     slider = Slider()
@@ -174,17 +206,37 @@ def _parse_slider(parsed_cur: list[str], slider_counts: dict[str:int]) -> Slider
     params = parsed_cur[5].split('|')
     slider_type = params[0]
     slider_counts[slider_type] += 1
+    first_point = params[1].split(':')
+    first_x = int(first_point[0])
+    first_y = int(first_point[1])
+
     last_point = params[-1].split(':')
     last_x = int(last_point[0])
     last_y = int(last_point[1])
+    numSlides = int(parsed_cur[6])
+    sliderLength = float(parsed_cur[7])
+
+    # even number of slides means it ends on the starting point
+    if numSlides % 2 == 1:
+        slider.lastX = last_x
+        slider.lastY = last_y
+    else:
+        slider.lastX = first_x
+        slider.lastY = first_y
 
     slider.sliderType = slider_type
-    slider.lastX = last_x
-    slider.lastY = last_y
+    slider.numSlides = numSlides
+    
+    slider.sliderLength = sliderLength
+    slider.totalSliderLength = numSlides * sliderLength
+    time = int(parsed_cur[2])
+    ret = _get_latest_beat_length(beat_lengths, time)
+    slider.timeLength = _compute_slider_time_length(slider.totalSliderLength, ret[0], 
+                                                    ret[1], sliderMult)
 
     return slider
 
-def _get_info(in_file) -> MapInfo:
+def _get_info(in_file, beatLengths: list[tuple[int, float]], sliderMult: float) -> MapInfo:
     """Returns a list information on the hit objects in the map.
 
     Differences are calculated from the later object to the earlier object.
@@ -212,7 +264,7 @@ def _get_info(in_file) -> MapInfo:
         obj_type = int(parsed_cur[3])
         if _is_slider(obj_type):
             num_sliders += 1
-            new_hitObject = _parse_slider(parsed_cur, slider_counts)
+            new_hitObject = _parse_slider(parsed_cur, slider_counts, beatLengths, sliderMult)
             
         elif _is_circle(obj_type): 
             num_circles += 1
@@ -254,7 +306,7 @@ def _get_info(in_file) -> MapInfo:
     logging.info("Finished reading hit object information.")
     return outInfo
 
-def _compute_attributes(info: MapInfo, beat_lengths: list[float]) -> ComputedInfo:
+def _compute_attributes(info: MapInfo, beat_lengths: list[tuple[int, float]]) -> ComputedInfo:
     """
     Does more "advanced" computation using the map info
     """
@@ -279,13 +331,15 @@ def parse_osu(input_file_name):
 
     line = ''
     # read in difficulty
-    line += _read_difficulty(in_file)
+    difficulty = _read_difficulty(in_file)
+    line += difficulty
+    sliderMult = float(difficulty.split(',')[4])
     
     # get list of beat lengths
     beat_lengths = _get_beat_lengths(in_file)
 
-    info = _get_info(in_file)
-    # _show_info_debug(info)
+    info = _get_info(in_file, beat_lengths, sliderMult)
+    _show_info_debug(info)
 
     computed = _compute_attributes(info, beat_lengths)
 
