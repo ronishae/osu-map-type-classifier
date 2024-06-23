@@ -18,13 +18,14 @@ class HitCircle(HitObject):
 @dataclass
 class Slider(HitObject):
     sliderType: str = None
-    # lastTime: int
     lastX: int = None
     lastY: int = None
+    lastPoint: tuple[int, int] = None
     numSlides: int = None
     sliderLength: float = None
     timeLength: float = None
     totalSliderLength: float = None
+    endTime: float = None
 
 @dataclass
 class Spinner(HitObject):
@@ -69,22 +70,16 @@ class MapInfo():
 @dataclass
 class ComputedInfo():
     """
-    avgDist: the average distance between two objects in pixels (spinner excluded)
-    avgTime: the average % of beat length between two objects. Ignores time difference if the difference is over 800ms
+    avgDist: the average distance between two objects in pixels
+    avgTime: the average % of beat length between two objects. Ignores time difference if the difference is over 2 seconds
     (this number is somewhat arbtrirary, but it is to ensure breaks are ignored)
-    The rest of the attributes are the percent of hit objects (includes spinner) mapped at that time
+    timingPercents: a dictionary storing the percentage of notes mapped at a specific timing interval.
+    Possible options include: wholes, halves, thirds, fourths, sixths, eigths, twelfths, sixteenths. Total
+    may not sum to 1 due to missing timing intervals or some excluded notes or rounding.
     """
     avgDist: float
     avgTime: float
-    wholes: float
-    halves: float
-    thirds: float
-    fourths: float
-    sixths: float
-    eigths: float
-    twelfths: float
-    sixteenths: float
-
+    timingPercents: dict[str:float]
 
 def _seek_to_section(in_file, section) -> None:
     """Jumps to the given section in the file (case sensitive).
@@ -152,19 +147,31 @@ def _get_beat_lengths(in_file) -> list[tuple[int, float]]:
     
     return beat_lengths
 
-def _get_latest_beat_length(times: list[tuple[int, float]], time: int) -> tuple[float, float]:
+def _get_current_beat_length(timingPoints: list[tuple[int, float]], time: int) -> float:
+    prevBeatLength, latestBeatLength = _get_latest_beat_length(timingPoints, time)
+    print(f'cur beat length: {prevBeatLength}, {latestBeatLength}, {time}')
+    if latestBeatLength >= 0:
+        beatLength = latestBeatLength
+    else:
+        beatLength = prevBeatLength * abs(latestBeatLength) / 100
+
+    return beatLength
+
+def _get_latest_beat_length(timingPoints: list[tuple[int, float]], time: int) -> tuple[float, float]:
     """The second value is the beat length corresponding to the largest time in the list 
-    which is less than the given time. Assumes the times list is sorted. 
+    which is less than the given time. Assumes the timingPoints list is sorted. 
     Assumes non-empty list. The first value is the most recent non-negative beat length before
     the second value."""
-    pos = times[0]
-    cur = times[0]
-    for candidate in times:
-        if candidate[1] > 0:
+    pos = timingPoints[0]
+    cur = timingPoints[0]
+    for candidate in timingPoints: # candidate is of form (time, beatLength)
+        if candidate[1] > 0:  # if positive beat length, set as that
             pos = candidate
 
         if candidate[0] < time:
             cur = candidate
+        else:  # exit since the timing point now occurs after the given time
+            break
 
     return (pos[1], cur[1])
 
@@ -186,15 +193,12 @@ def _get_object_type(num) -> str:
     else:
         return "spinner"
 
-def _compute_slider_time_length(totalLength: float, prevBeatLength: float, 
-                                latestBeatLength: float, sliderMult: float) -> float:
+def _compute_slider_time_length(totalLength: float, beat_lengths: list[tuple[int, float]], 
+                                time: int, sliderMult: float) -> float:
     """Calculates the length of time a slider exists for.
     TODO: do some tests
     """
-    if latestBeatLength >= 0:
-        beatLength = latestBeatLength
-    else:
-        beatLength = prevBeatLength * abs(latestBeatLength) / 100
+    beatLength = _get_current_beat_length(beat_lengths, time)
 
     return totalLength * beatLength / (sliderMult * 100)
 
@@ -218,9 +222,11 @@ def _parse_slider(parsed_cur: list[str], slider_counts: dict[str:int], beat_leng
 
     # even number of slides means it ends on the starting point
     if numSlides % 2 == 1:
+        slider.lastPoint = (last_x, last_y)
         slider.lastX = last_x
         slider.lastY = last_y
     else:
+        slider.lastPoint = (first_x, first_y)
         slider.lastX = first_x
         slider.lastY = first_y
 
@@ -230,9 +236,9 @@ def _parse_slider(parsed_cur: list[str], slider_counts: dict[str:int], beat_leng
     slider.sliderLength = sliderLength
     slider.totalSliderLength = numSlides * sliderLength
     time = int(parsed_cur[2])
-    ret = _get_latest_beat_length(beat_lengths, time)
-    slider.timeLength = _compute_slider_time_length(slider.totalSliderLength, ret[0], 
-                                                    ret[1], sliderMult)
+    slider.timeLength = _compute_slider_time_length(slider.totalSliderLength, beat_lengths, 
+                                                    time, sliderMult)
+    slider.endTime = time + slider.timeLength
 
     return slider
 
@@ -308,13 +314,68 @@ def _get_info(in_file, beatLengths: list[tuple[int, float]], sliderMult: float) 
 
 def _compute_attributes(info: MapInfo, beat_lengths: list[tuple[int, float]]) -> ComputedInfo:
     """
-    Does more "advanced" computation using the map info
+    Does more "advanced" computation using the map info and returns the computed information in a
+    ComputedInfo object.
     """
     logging.info("Started computing attributes.")
-    formatted_output = ''
+
+    output = ComputedInfo(None, None, None)  # to be initialized
+    timingDict = {'wholes': 0, 'halves': 0, 'thirds': 0, 'fourths': 0, 
+                  'sixths': 0, 'eigths': 0, 'twelfths': 0, 'sixteenths': 0}
+
+    numObjects = len(info.hit_objects)
+    
+    totalTimeDiff = 0
+    totalDistDiff = 0
+    
+    times = info.time_diffs
+    # TODO: for each, get the current beat length (assume both are same beat length for simplicity
+    # there should be little effect so just use the second's beat length)
+    # then after getting raw time, turn into % of beat length
+    # lastly, check if it matches one of the timing patterns (with some leniency, unsure what it should be)
+    for index, second in enumerate(info.hit_objects):
+
+        if index == 0:
+            continue
+        
+        # current beat length
+        beatLength = _get_current_beat_length(beat_lengths, second.time)
+        
+        # TODO: use beatlength to calculate timing of wholes halves etc..
+
+        print(f'bl:{beatLength}')
+        first = info.hit_objects[index - 1]
+        if isinstance(first, Slider) or isinstance(first, Spinner):
+            timeDiff = second.time - first.endTime
+            print('hi')
+        else: # circle
+            timeDiff = times[index - 1]
+            
+        print(timeDiff)
+        if timeDiff < 2000:            
+            totalTimeDiff += timeDiff
+        else:
+            numObjects -= 1
+        
+        if isinstance(first, Slider):
+            totalDistDiff += math.sqrt((second.x - first.lastX) ** 2 + (second.y - first.lastY) ** 2)
+        
+        else:
+            totalDistDiff += math.sqrt((second.x - first.x) ** 2 + (second.y - first.y) ** 2)
+
+    # time diff doesn't count objects with 2 second+ gap, but dist always counts
+    # count the number of gaps, so one less than the number of counted objects
+    avgTimeDiff = totalTimeDiff / (numObjects - 1)
+    avgDist = totalDistDiff / (len(info.hit_objects) - 1)
+
+    # computing timing diffs
+    output.avgDist = avgDist
+    output.avgTime = avgTimeDiff
+    output.timingPercents = timingDict
 
     logging.info("Finished computing attributes.")
-    return formatted_output
+    print(output)
+    return output
     
 
 def parse_osu(input_file_name):
@@ -352,9 +413,9 @@ def parse_osu(input_file_name):
     return
 
 def _show_info_debug(info: MapInfo) -> None:
-    for obj in info.hit_objects:
-        print(obj)
-        print("\n")
+    # for obj in info.hit_objects:
+    #     print(obj)
+    #     print("\n")
 
     print(info.slider_counts)
 
