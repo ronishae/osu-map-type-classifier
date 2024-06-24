@@ -2,8 +2,10 @@ import csv
 import logging
 import numpy as np
 import math
+import os
 from dataclasses import dataclass
 from collections import OrderedDict
+MAP_DIRECTORY = 'map_data/'
 OUTPUT_FILE_HEADER = "HPDrainRate,CircleSize,OverallDifficulty,ApproachRate,SliderMultiplier,avgDist,avgTime,wholes,halves,thirds,fourths,sixths,eigths,twelfths,sixteenths,other,target\n"
 TIMING_TOLERANCE = 0.05
 FRACTIONS = {
@@ -443,15 +445,12 @@ def _compute_attributes(info: MapInfo, beat_lengths: list[tuple[int, float]]) ->
     return output
     
 
-def parse_osu(input_file_name: str, target: str):
+def parse_osu(input_file_name: str, out, target: str):
     """Parses the osu formatted file and outputs it as a csv file."""
     logging.info(f"Started parsing file {input_file_name}.")
     # TODO apparently using with is better so change it
     in_file = open(input_file_name, encoding="utf8", mode='r')
-    out = open("output.csv", 'w')
-
-    out.write(OUTPUT_FILE_HEADER)
-
+    
     # first line is always version declaration
     version = in_file.readline()
 
@@ -481,15 +480,32 @@ def parse_osu(input_file_name: str, target: str):
     line += '\n'
     out.write(line)
 
-    out.close()
     in_file.close()
     logging.info(f"Finished parsing file {input_file_name}.")
+    return
+
+def parse_target(out, target: str):
+    
+    targetDirectory = MAP_DIRECTORY + target + '/'
+    for filename in os.listdir(targetDirectory):
+        parse_osu(targetDirectory + filename, out, 'stream')
+
+    return
+
+def parse_data():
+    out = open("output.csv", 'w')
+    out.write(OUTPUT_FILE_HEADER)
+
+    parse_target(out, 'jump')
+    parse_target(out, 'stream')
+
+    out.close()
     return
 
 if __name__ == "__main__":
     logging.basicConfig(filename='parser.log',filemode='w', level=logging.INFO, 
                         format='%(asctime)s - %(message)s', datefmt='%d-%b-%y %H:%M:%S')
+    
+    parse_data()
 
-    input_file = "www.osu" 
-    parse_osu(input_file, 'stream')
-
+   
