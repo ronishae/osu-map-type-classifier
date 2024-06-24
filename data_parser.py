@@ -3,7 +3,19 @@ import logging
 import numpy as np
 import math
 from dataclasses import dataclass
-OUTPUT_FILE_HEADER = "HPDrainRate,CircleSize,OverallDifficulty,ApproachRate,SliderMultiplier,SliderTickRate\n"
+from collections import OrderedDict
+OUTPUT_FILE_HEADER = "HPDrainRate,CircleSize,OverallDifficulty,ApproachRate,SliderMultiplier,avgDist,avgTime,wholes,halves,thirds,fourths,sixths,eigths,twelfths,sixteenths,other,target\n"
+TIMING_TOLERANCE = 0.05
+FRACTIONS = {
+    'wholes': 1,
+    'halves': 1/2,
+    'thirds': 1/3,
+    'fourths': 1/4,
+    'sixths': 1/6,
+    'eigths': 1/8,
+    'twelfths': 1/12,
+    'sixteenths': 1/16
+}
 
 @dataclass 
 class HitObject():
@@ -73,12 +85,14 @@ class ComputedInfo():
     avgDist: the average distance between two objects in pixels
     avgTime: the average % of beat length between two objects. Ignores time difference if the difference is over 2 seconds
     (this number is somewhat arbtrirary, but it is to ensure breaks are ignored)
+    timingDict: count of each timing
     timingPercents: a dictionary storing the percentage of notes mapped at a specific timing interval.
     Possible options include: wholes, halves, thirds, fourths, sixths, eigths, twelfths, sixteenths. Total
     may not sum to 1 due to missing timing intervals or some excluded notes or rounding.
     """
     avgDist: float
     avgTime: float
+    timingDict: dict[str:int]
     timingPercents: dict[str:float]
 
 def _seek_to_section(in_file, section) -> None:
@@ -149,7 +163,6 @@ def _get_beat_lengths(in_file) -> list[tuple[int, float]]:
 
 def _get_current_beat_length(timingPoints: list[tuple[int, float]], time: int) -> float:
     prevBeatLength, latestBeatLength = _get_latest_beat_length(timingPoints, time)
-    print(f'cur beat length: {prevBeatLength}, {latestBeatLength}, {time}')
     if latestBeatLength >= 0:
         beatLength = latestBeatLength
     else:
@@ -175,7 +188,18 @@ def _get_latest_beat_length(timingPoints: list[tuple[int, float]], time: int) ->
 
     return (pos[1], cur[1])
 
+def _get_latest_positive_beat_length(timingPoints: list[tuple[int, float]], time: int) -> float:
+    """Only gives the most recent positive (set) beat length"""
+    most_recent = timingPoints[0][0]
+    for candidate in timingPoints:
+        if candidate[0] > time:
+            break
 
+        if candidate[1] > 0:
+            most_recent = candidate[1]
+    
+    return most_recent
+        
 def _is_circle(num) -> bool:
     """The type is a circle if and only if the first bit is set."""
     return num & 1
@@ -312,6 +336,13 @@ def _get_info(in_file, beatLengths: list[tuple[int, float]], sliderMult: float) 
     logging.info("Finished reading hit object information.")
     return outInfo
 
+def _in_tolerance(input: float, target: float, tolerance: float) -> bool:
+    """
+    Meant for positive values. For target 1, tolerance 0.05, 0.95 to 1.05 is 
+    acceptable.
+    """
+    return target * (1 - tolerance) <= input <= target * (1 + tolerance)
+
 def _compute_attributes(info: MapInfo, beat_lengths: list[tuple[int, float]]) -> ComputedInfo:
     """
     Does more "advanced" computation using the map info and returns the computed information in a
@@ -319,9 +350,29 @@ def _compute_attributes(info: MapInfo, beat_lengths: list[tuple[int, float]]) ->
     """
     logging.info("Started computing attributes.")
 
-    output = ComputedInfo(None, None, None)  # to be initialized
-    timingDict = {'wholes': 0, 'halves': 0, 'thirds': 0, 'fourths': 0, 
-                  'sixths': 0, 'eigths': 0, 'twelfths': 0, 'sixteenths': 0}
+    output = ComputedInfo(None, None, None, None)  # to be initialized
+    timingDict = {
+        'wholes': 0,
+        'halves': 0,
+        'thirds': 0,
+        'fourths': 0,
+        'sixths': 0,
+        'eigths': 0,
+        'twelfths': 0,
+        'sixteenths': 0,
+        'other': 0
+    }
+
+    timingPercents = OrderedDict()
+    timingPercents['wholes'] = 0
+    timingPercents['halves'] = 0
+    timingPercents['thirds'] = 0
+    timingPercents['fourths'] = 0
+    timingPercents['sixths'] = 0
+    timingPercents['eigths'] = 0
+    timingPercents['twelfths'] = 0
+    timingPercents['sixteenths'] = 0
+    timingPercents['other'] = 0
 
     numObjects = len(info.hit_objects)
     
@@ -329,56 +380,70 @@ def _compute_attributes(info: MapInfo, beat_lengths: list[tuple[int, float]]) ->
     totalDistDiff = 0
     
     times = info.time_diffs
-    # TODO: for each, get the current beat length (assume both are same beat length for simplicity
-    # there should be little effect so just use the second's beat length)
-    # then after getting raw time, turn into % of beat length
-    # lastly, check if it matches one of the timing patterns (with some leniency, unsure what it should be)
     for index, second in enumerate(info.hit_objects):
 
         if index == 0:
             continue
         
         # current beat length
-        beatLength = _get_current_beat_length(beat_lengths, second.time)
-        
-        # TODO: use beatlength to calculate timing of wholes halves etc..
+        beatLength = _get_latest_positive_beat_length(beat_lengths, second.time)
 
-        print(f'bl:{beatLength}')
+        # time diff calculation
         first = info.hit_objects[index - 1]
         if isinstance(first, Slider) or isinstance(first, Spinner):
             timeDiff = second.time - first.endTime
-            print('hi')
         else: # circle
             timeDiff = times[index - 1]
             
-        print(timeDiff)
+        # print(timeDiff)
         if timeDiff < 2000:            
             totalTimeDiff += timeDiff
         else:
             numObjects -= 1
         
+        # timing calculation
+        timing = timeDiff / beatLength
+
+        incremented = False
+        for key, value in FRACTIONS.items():
+            if incremented:
+                break
+
+            if _in_tolerance(timing, value, TIMING_TOLERANCE):
+                timingDict[key] += 1
+                incremented = True
+            
+        if not incremented:
+            timingDict['other'] += 1
+        
+        # distance diff calculation
         if isinstance(first, Slider):
             totalDistDiff += math.sqrt((second.x - first.lastX) ** 2 + (second.y - first.lastY) ** 2)
         
         else:
             totalDistDiff += math.sqrt((second.x - first.x) ** 2 + (second.y - first.y) ** 2)
 
+    
+    for timingType in timingDict:
+        timingPercents[timingType] = timingDict[timingType] / len(info.hit_objects) * 100  # multiply by 100 to make it a percent
+
     # time diff doesn't count objects with 2 second+ gap, but dist always counts
     # count the number of gaps, so one less than the number of counted objects
     avgTimeDiff = totalTimeDiff / (numObjects - 1)
     avgDist = totalDistDiff / (len(info.hit_objects) - 1)
 
-    # computing timing diffs
+    # assigning values
     output.avgDist = avgDist
     output.avgTime = avgTimeDiff
-    output.timingPercents = timingDict
+    output.timingDict = timingDict
+    output.timingPercents = timingPercents
 
     logging.info("Finished computing attributes.")
-    print(output)
+    # print(output)
     return output
     
 
-def parse_osu(input_file_name):
+def parse_osu(input_file_name: str, target: str):
     """Parses the osu formatted file and outputs it as a csv file."""
     logging.info(f"Started parsing file {input_file_name}.")
     # TODO apparently using with is better so change it
@@ -400,9 +465,18 @@ def parse_osu(input_file_name):
     beat_lengths = _get_beat_lengths(in_file)
 
     info = _get_info(in_file, beat_lengths, sliderMult)
-    _show_info_debug(info)
-
     computed = _compute_attributes(info, beat_lengths)
+    
+    # write the computed info to the csv
+    line += str(computed.avgDist) + ','
+    line += str(computed.avgTime) + ','
+
+    timingPercents = computed.timingPercents
+    for key, percent in timingPercents.items():
+        line += str(percent) + ','
+
+    # write the map classification answer
+    line += target
 
     line += '\n'
     out.write(line)
@@ -412,17 +486,10 @@ def parse_osu(input_file_name):
     logging.info(f"Finished parsing file {input_file_name}.")
     return
 
-def _show_info_debug(info: MapInfo) -> None:
-    # for obj in info.hit_objects:
-    #     print(obj)
-    #     print("\n")
-
-    print(info.slider_counts)
-
 if __name__ == "__main__":
     logging.basicConfig(filename='parser.log',filemode='w', level=logging.INFO, 
                         format='%(asctime)s - %(message)s', datefmt='%d-%b-%y %H:%M:%S')
 
-    input_file = "quaver.osu" 
-    parse_osu(input_file)
+    input_file = "www.osu" 
+    parse_osu(input_file, 'stream')
 
