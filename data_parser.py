@@ -436,6 +436,7 @@ def _compute_attributes(info: MapInfo, beat_lengths: list[tuple[int, float]]) ->
 
     # assigning values
     output.avgDist = avgDist
+    print(avgDist)
     output.avgTime = avgTimeDiff
     output.timingDict = timingDict
     output.timingPercents = timingPercents
@@ -457,7 +458,8 @@ def parse_osu(input_file_name: str, out, target: str):
     line = ''
     # read in difficulty
     difficulty = _read_difficulty(in_file)
-    line += difficulty
+    line += difficulty + ','
+
     sliderMult = float(difficulty.split(',')[4])
     
     # get list of beat lengths
@@ -485,7 +487,6 @@ def parse_osu(input_file_name: str, out, target: str):
     return
 
 def parse_target(out, target: str):
-    
     targetDirectory = MAP_DIRECTORY + target + '/'
     for filename in os.listdir(targetDirectory):
         parse_osu(targetDirectory + filename, out, target)
@@ -496,8 +497,8 @@ def parse_data():
     out = open("output.csv", 'w')
     out.write(OUTPUT_FILE_HEADER)
 
-    parse_target(out, 'jump')
-    parse_target(out, 'stream')
+    parse_target(out, '0')  # jump
+    parse_target(out, '1')  # stream
 
     out.close()
     return
