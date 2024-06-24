@@ -488,7 +488,7 @@ def parse_target(out, target: str):
     
     targetDirectory = MAP_DIRECTORY + target + '/'
     for filename in os.listdir(targetDirectory):
-        parse_osu(targetDirectory + filename, out, 'stream')
+        parse_osu(targetDirectory + filename, out, target)
 
     return
 
